@@ -16,6 +16,14 @@
 
     <ItemGroup>
       <Compile Remove="Convert.cs" />
+      <PackageReference Include="vtortola.WebSocketListener" Version="3.0.0" />
+
+
+
+
     </ItemGroup>
+
+
+
 
 </Project>
