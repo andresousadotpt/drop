@@ -2,13 +2,13 @@
 
 public class Client
 {
-    public string uuid { get; set; }
+    public string guid { get; set; }
     public DateTime lastBeat { get; set; }
     
 
-    public Client(string uuid, DateTime lastBeat)
+    public Client(string guid, DateTime lastBeat)
     {
-        this.uuid = uuid;
+        this.guid = guid;
         this.lastBeat = lastBeat;
     }
 }

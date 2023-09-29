@@ -30,15 +30,16 @@ public class RoomService
     {
         while (true)
         {
-            Console.WriteLine("Waiting for client to connect");
             try
             {
                 WebSocket socket = await _server.AcceptWebSocketAsync(_cts.Token);
                 try
                 {
-                    await HandleEmptyRooms();
+                    HandleAFKEmptyRooms();
                     await HandleClientAsync(socket);
                     WebSocketMessageStream messageStream = null;
+                    
+                    // Add this to a method at Message class like Message.handle whatever idk
                     Task.Run(async () =>
                     {
                         messageStream = await socket.ReadMessageAsync(_cts.Token);
@@ -46,11 +47,10 @@ public class RoomService
                     {
                         if (t.IsCompletedSuccessfully)
                         {
-                            Console.WriteLine("Is completed");
                             var msgContent = string.Empty;
                             using (var sr = new StreamReader(messageStream, Encoding.UTF8))
                                 msgContent = await sr.ReadToEndAsync();
-                            await KeepClientAlive(socket);
+                            // await KeepClientAlive(socket);
                             await HandleClientMessages(socket, msgContent);
                         }
                         else if (t.IsFaulted)
@@ -73,29 +73,43 @@ public class RoomService
             }
         }
     }
-
-    public async Task HandleEmptyRooms()
+    public void HandleAFKEmptyRooms()
     {
-        _rooms.RemoveAll(_ => _.clients.IsEmpty);
+        // Have to verify this
+        _rooms.RemoveAll(room => room.clients.IsEmpty);
+
+        int timeout = 10000;
+
+        Parallel.ForEach(_rooms, room =>
+        {
+            var keysToRemove = room.clients
+                .Where(kv => (DateTime.Now - kv.Key.lastBeat).TotalMilliseconds > (2 * timeout))
+                .ToList();
+            
+            foreach (var (key, value) in keysToRemove)
+            {
+                value.Close();
+                room.clients.TryRemove(key, out _);
+            }
+        });
     }
 
     public async Task HandleClientAsync(WebSocket socket)
     {
         string clientIp = GetClientIP(socket).Split(":").First();
         
-        Console.WriteLine("Handled client connection at " + clientIp);
         Client client;
         
         if (_rooms.Any(x => x.name.Equals(clientIp)))
         {
             var room = _rooms.Find(x => x.name.Equals(clientIp));
-            var guid = Guid.NewGuid().ToString();
+            client = new Client(Guid.NewGuid().ToString(), DateTime.Now);
+            Message.Send(socket, JsonSerializer.Serialize(client));
             
-            room?.clients.TryAdd(new Client(guid, DateTime.Now), socket);
-            Console.WriteLine("Added client " + guid + " to " + room?.name);
+            room.clients.TryAdd(client, socket);
             
-            NotifyPeers(room, guid);
-            GetPeers(room, guid);
+            NotifyPeers(room, client.guid);
+            GetPeers(room, client.guid);
         }
         else
         {
@@ -107,50 +121,46 @@ public class RoomService
             newRoom.clients.TryAdd(client, socket);
             _rooms.Add(newRoom);
             
-            // Message.Send(client, String.Format("Your id is: {0} \n", newClient.uuid));
             Message.Send(socket, JsonSerializer.Serialize(client));
-            
-            Console.WriteLine("Room created with name: " + newRoom.name);
         }
     }
     
     public async Task HandleClientMessages(WebSocket socket, string msgContent)
     {
+        WebSocketMessageStream messageStream = null;
+        
+        Task.Run(async () =>
+        {
+            messageStream = await socket.ReadMessageAsync(_cts.Token);
+        }).ContinueWith(async t =>
+        {
+            if (t.IsCompletedSuccessfully)
+            {
+                using (var sr = new StreamReader(messageStream, Encoding.UTF8))
+                    await HandleClientMessages(socket, await sr.ReadToEndAsync());
+            }
+            else if (t.IsFaulted)
+            {
+                Console.WriteLine("Error reading message: " + t.Exception.InnerException.Message);
+            }
+        });
+        
         if(_rooms.Any(_ => _.clients.Values.Any(c => c.Equals(socket))))
         {
             Room clientRoom = _rooms.Find(_ => _.clients.Any(x => x.Value.Equals(socket)));
             Client client = clientRoom.clients.Keys.First();
-            switch (msgContent)
+            var msg = msgContent.Split(" ");
+            switch (msg[0])
             {
-                case "pong":
-                    Console.WriteLine("PONG");
+                case "ping":
                     client.lastBeat = DateTime.Now;
+                    Message.Send(socket, "pong");
                     break;
                 case "disconnect":
-                    socket.Close();
-                    clientRoom.clients.TryRemove(client, out WebSocket _);
+                    LeaveRoom(clientRoom, client, socket);
                     break;
             }    
         }
-        
-    }
-    
-    public async Task KeepClientAlive(WebSocket socket)
-    {
-        Console.WriteLine("Keeping client alive");
-        int timeout = 10000;
-        Room room = _rooms.Find(_ => _.clients.Values.First().Equals(socket));
-        Client client = room.clients.Keys.First();
-        WebSocket clientSocket = room.clients.Values.First();
-
-        if ((DateTime.Now - client.lastBeat).TotalMilliseconds > (2 * timeout))
-        {
-            Console.WriteLine("Leaving Room");
-            LeaveRoom(room, client, clientSocket);
-        }
-        
-        Message.Send(socket, "ping");
-        Console.WriteLine("Sending ping");
     }
 
     public void LeaveRoom(Room room, Client clientObj, WebSocket socket)
@@ -163,18 +173,16 @@ public class RoomService
     {
         if (room == null) return;
         
-        var clients = room.clients.Where(x => x.Key.uuid != guid);
-        if (clients.Any())
+        if (room.clients.Any())
         {
-            foreach (var client in clients)
+            var originalClient = room.clients.Where(c => c.Key.guid == guid).Select(kv => kv.Key).FirstOrDefault();
+            if (originalClient != null)
             {
-                Message.Send(client.Value, String.Format("User with id: {0} connected \n", client.Key.uuid));
-                Console.WriteLine("Notified");
+                foreach (var client in room.clients.Where(c => c.Key.guid != guid))
+                {
+                    Message.Send(client.Value, String.Format("User with id: {0} is connecting to your peer \n", originalClient.guid));
+                }
             }
-        }
-        else
-        {
-            Console.WriteLine("No one to notify");
         }
     }
     
@@ -182,24 +190,21 @@ public class RoomService
     {
         if (room == null) return;
         
-        var clientDictionary = room.clients.Where(x => x.Key.uuid == guid);
-        if (clientDictionary.Any())
+        if (room.clients.Any())
         {
-            var client = clientDictionary.First();
-            foreach (var clientInside in room.clients.Where(x => x.Key.uuid != guid))
+            var originalClient = room.clients.Where(c => c.Key.guid == guid).Select(kv => kv.Value).FirstOrDefault();
+            if (originalClient != null)
             {
-                Message.Send(client.Value, String.Format("User with id: {0} is connected to your peer \n", clientInside.Key.uuid));
+                foreach (var client in room.clients.Where(c => c.Key.guid != guid))
+                {
+                    Message.Send(originalClient, String.Format("User with id: {0} is connected to your peer \n", client.Key.guid));
+                }
             }
-        }
-        else
-        {
-            Console.WriteLine("No clients connected to room");
         }
     }
 
     public string GetClientIP(WebSocket socket)
     {
-        
         return (socket.RemoteEndpoint as IPEndPoint).ToString();
     }
 }
