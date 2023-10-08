@@ -1,6 +1,6 @@
 # Drop
 
-[Drop](https://drop.andresousa.pt): local file sharing in your browser. Inspired by Apple's Airdrop.
+[Drop](https://drop.andresousa.pt): local file and text sharing in your browser. Inspired by Apple's Airdrop.
 
 #### Drop is built with the following technologies:
 
