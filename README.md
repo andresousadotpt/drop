@@ -5,7 +5,7 @@
 #### Drop is built with the following technologies:
 
 -   [React](https://react.dev/) front-end
--   Websocket C# back-end
+-   Websocket Golang back-end
 
 You can [host your own app with Docker](/docs/dev.md).
 
